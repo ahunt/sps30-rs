@@ -1,3 +1,6 @@
+mod shdlc;
+
+// TODO: remove default boilerplate.
 pub fn add(left: usize, right: usize) -> usize {
     left + right
 }
