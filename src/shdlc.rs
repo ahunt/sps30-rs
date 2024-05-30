@@ -57,6 +57,41 @@ pub fn mosi_frame(adr: u8, cmd: u8, data: &[u8]) -> Result<Vec<u8>, String> {
     Result::Ok(out)
 }
 
+fn unstuff_rx_data(expected_unstuffed_length: usize, data: &[u8]) -> Result<Vec<u8>, String> {
+    if expected_unstuffed_length > data.len() {
+        return Result::Err(String::from(
+            "expected unstuffed length cannot be greater than actual stuffed length",
+        ));
+    }
+
+    let mut out = Vec::with_capacity(expected_unstuffed_length);
+    let mut it = data.iter();
+    while let Some(byte) = it.next() {
+        if *byte == 0x7D {
+            let mapped = match it.next() {
+                Some(0x5E) => Some(0x7E),
+                Some(0x5D) => Some(0x7D),
+                Some(0x31) => Some(0x11),
+                Some(0x33) => Some(0x13),
+                // TODO: include the stuffed byte once we have real error types.
+                Some(_) => return Result::Err(String::from("invalid/unsupported stuffed byte")),
+                None => {
+                    return Result::Err(String::from("unexpected end of data after stuff byte"))
+                }
+            };
+            out.push(mapped.unwrap());
+        } else {
+            out.push(*byte);
+        }
+    }
+    if out.len() != expected_unstuffed_length {
+        return Result::Err(String::from(
+            "unstuffed length did not match expected unstuffed length",
+        ));
+    }
+    Result::Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,6 +186,82 @@ mod tests {
         for case in tests {
             let out = mosi_frame(case.adr, case.cmd, case.input);
             assert_eq!(case.expected_result, out);
+        }
+    }
+
+    #[test]
+    fn test_unstuff_rx_data() {
+        struct TestCase<'a> {
+            input: &'a [u8],
+            expected_unstuffed_length_input: usize,
+            expected_result: Result<Vec<u8>, String>,
+        }
+        let tests = [
+            TestCase {
+                input: &[],
+                expected_unstuffed_length_input: 0,
+                expected_result: Result::Ok(vec![]),
+            },
+            TestCase {
+                input: &[],
+                expected_unstuffed_length_input: 1,
+                expected_result: Result::Err(String::from(
+                    "expected unstuffed length cannot be greater than actual stuffed length",
+                )),
+            },
+            TestCase {
+                input: &[0],
+                expected_unstuffed_length_input: 0,
+                expected_result: Result::Err(String::from(
+                    "unstuffed length did not match expected unstuffed length",
+                )),
+            },
+            TestCase {
+                input: &[0],
+                expected_unstuffed_length_input: 1,
+                expected_result: Result::Ok(vec![0]),
+            },
+            TestCase {
+                input: &[0xFF, 0],
+                expected_unstuffed_length_input: 2,
+                expected_result: Result::Ok(vec![0xFF, 0]),
+            },
+            TestCase {
+                input: &[0x7D, 0x5E],
+                expected_unstuffed_length_input: 1,
+                expected_result: Result::Ok(vec![0x7E]),
+            },
+            TestCase {
+                input: &[0x7D, 0x5D],
+                expected_unstuffed_length_input: 1,
+                expected_result: Result::Ok(vec![0x7D]),
+            },
+            TestCase {
+                input: &[0x7D, 0x31],
+                expected_unstuffed_length_input: 1,
+                expected_result: Result::Ok(vec![0x11]),
+            },
+            TestCase {
+                input: &[0x7D, 0x33],
+                expected_unstuffed_length_input: 1,
+                expected_result: Result::Ok(vec![0x13]),
+            },
+            TestCase {
+                input: &[0, 0x7D, 0x5E, 0],
+                expected_unstuffed_length_input: 3,
+                expected_result: Result::Ok(vec![0, 0x7E, 0]),
+            },
+            TestCase {
+                input: &[0, 0x7D, 0x5E, 0],
+                expected_unstuffed_length_input: 4,
+                expected_result: Result::Err(String::from(
+                    "unstuffed length did not match expected unstuffed length",
+                )),
+            },
+        ];
+        for case in tests {
+            let out = unstuff_rx_data(case.expected_unstuffed_length_input, case.input);
+            assert_eq!(case.expected_result, out)
         }
     }
 }
