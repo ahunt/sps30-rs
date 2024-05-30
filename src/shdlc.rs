@@ -28,6 +28,14 @@ fn stuff_data(data: &[u8], out: &mut Vec<u8>) {
     }
 }
 
+fn checksum(data: &[u8]) -> u8 {
+    let mut sum: u8 = 0;
+    for i in data {
+        sum = sum.wrapping_add(*i)
+    }
+    !sum
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,5 +89,13 @@ mod tests {
             stuff_data(case.input, &mut out);
             assert_eq!(case.expected_output, out);
         }
+    }
+
+    #[test]
+    fn test_checksum() {
+        assert_eq!(checksum(&[0x00, 0x00, 0x00]), 0xFF);
+        assert_eq!(checksum(&[0x0F, 0xF0, 0x00]), 0x00);
+        // Example from datasheet:
+        assert_eq!(checksum(&[0x00, 0x00, 0x02, 0x01, 0x03]), 0xF9);
     }
 }
