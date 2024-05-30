@@ -1,3 +1,5 @@
+use std::fmt;
+
 /// stuff_data stuffs data following SHDLC conventions.
 ///
 /// Or, to be more precise, data is stuffed following the convention documented
@@ -90,6 +92,58 @@ fn unstuff_rx_data(expected_unstuffed_length: usize, data: &[u8]) -> Result<Vec<
         ));
     }
     Result::Ok(out)
+}
+
+pub struct MisoFrame {
+    adr: u8,
+    cmd: u8,
+    state: u8,
+    data: Vec<u8>,
+}
+
+impl fmt::Debug for MisoFrame {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "MisoFrame {{ adr: {}, cmd: {}, state: {}, data: {:#X?} }}",
+            self.adr, self.cmd, self.state, self.data
+        )
+    }
+}
+
+impl PartialEq for MisoFrame {
+    fn eq(&self, other: &Self) -> bool {
+        self.adr == other.adr
+            && self.cmd == other.cmd
+            && self.state == other.state
+            && self.data == other.data
+    }
+}
+
+// Decode an entire miso_frame, including start/stop bytes.
+pub fn decode_miso_frame(data: &[u8]) -> Result<MisoFrame, String> {
+    if data.len() < 7 {
+        return Result::Err(String::from("invalid miso frame length"));
+    }
+
+    if data[0] != 0x7E || data[data.len() - 1] != 0x7E {
+        return Result::Err(String::from(
+            "invalid miso frame: incorrect/missing start/stop bytes",
+        ));
+    }
+
+    let expected_unstuffed_length = data[4];
+    let rx_data = &data[5..data.len() - 2];
+    let unstuffed_data = unstuff_rx_data(usize::from(expected_unstuffed_length), &rx_data)?;
+
+    // TODO: check checksum.
+
+    Result::Ok(MisoFrame {
+        adr: data[1],
+        cmd: data[2],
+        state: data[3],
+        data: unstuffed_data,
+    })
 }
 
 #[cfg(test)]
@@ -261,6 +315,63 @@ mod tests {
         ];
         for case in tests {
             let out = unstuff_rx_data(case.expected_unstuffed_length_input, case.input);
+            assert_eq!(case.expected_result, out)
+        }
+    }
+    #[test]
+    fn test_decode_miso_frame() {
+        struct TestCase<'a> {
+            input: &'a [u8],
+            expected_result: Result<MisoFrame, String>,
+        }
+        let tests = [
+            TestCase {
+                input: &[],
+                expected_result: Result::Err(String::from("invalid miso frame length")),
+            },
+            TestCase {
+                // TODO: fix CHK (2nd last byte) once checksum checks are implemented.
+                input: &[0x7E, 0, 0, 0, 0, 0, 0x7E],
+                expected_result: Result::Ok(MisoFrame {
+                    adr: 0,
+                    cmd: 0,
+                    state: 0,
+                    data: vec![],
+                }),
+            },
+            TestCase {
+                // TODO: fix CHK (2nd last byte) once checksum checks are implemented.
+                input: &[0x7E, 0, 0, 0, 1, 0xFF, 0, 0x7E],
+                expected_result: Result::Ok(MisoFrame {
+                    adr: 0,
+                    cmd: 0,
+                    state: 0,
+                    data: vec![0xFF],
+                }),
+            },
+            TestCase {
+                // TODO: fix CHK (2nd last byte) once checksum checks are implemented.
+                input: &[0x7E, 0, 0, 0, 4, 0xFF, 0x7D, 0x5E, 1, 0xFF, 0, 0x7E],
+                expected_result: Result::Ok(MisoFrame {
+                    adr: 0,
+                    cmd: 0,
+                    state: 0,
+                    data: vec![0xFF, 0x7E, 1, 0xFF],
+                }),
+            },
+            TestCase {
+                // TODO: fix CHK (2nd last byte) once checksum checks are implemented.
+                input: &[0x7E, 1, 2, 3, 1, 0xFF, 0, 0x7E],
+                expected_result: Result::Ok(MisoFrame {
+                    adr: 1,
+                    cmd: 2,
+                    state: 3,
+                    data: vec![0xFF],
+                }),
+            },
+        ];
+        for case in tests {
+            let out = decode_miso_frame(case.input);
             assert_eq!(case.expected_result, out)
         }
     }
