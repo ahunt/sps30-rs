@@ -36,6 +36,27 @@ fn checksum(data: &[u8]) -> u8 {
     !sum
 }
 
+pub fn mosi_frame(adr: u8, cmd: u8, data: &[u8]) -> Result<Vec<u8>, String> {
+    if data.len() > 255 {
+        return Result::Err(String::from("input too large"));
+    }
+    // output length won't be known until we've performed stuffing, but at least
+    // we know the minimum output length.
+    let mut out = Vec::with_capacity(data.len() + 6);
+
+    out.push(0x7E); // Start
+    out.push(adr);
+    out.push(cmd);
+    out.push(data.len().try_into().unwrap()); // specified as _unstuffed_ len.
+    stuff_data(data, &mut out);
+    // Checksum is on adr + cmd + len + data (excluding start/stop and the
+    // checksum byte that we obviously don't know yet.)
+    out.push(checksum(&out[1..]));
+    out.push(0x7E); // Stop
+
+    Result::Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,5 +118,39 @@ mod tests {
         assert_eq!(checksum(&[0x0F, 0xF0, 0x00]), 0x00);
         // Example from datasheet:
         assert_eq!(checksum(&[0x00, 0x00, 0x02, 0x01, 0x03]), 0xF9);
+    }
+
+    #[test]
+    fn test_mosi_frame() {
+        struct TestCase<'a> {
+            input: &'a [u8],
+            adr: u8,
+            cmd: u8,
+            expected_result: Result<Vec<u8>, String>,
+        }
+        let tests = [
+            TestCase {
+                input: &[],
+                adr: 0,
+                cmd: 0,
+                expected_result: Result::Ok(vec![0x7E, 0, 0, 0, 0xFF, 0x7E]),
+            },
+            TestCase {
+                input: &[0x01, 0x03],
+                adr: 0,
+                cmd: 0,
+                expected_result: Result::Ok(vec![0x7E, 0, 0, 0x02, 0x01, 0x03, 0xF9, 0x7E]),
+            },
+            TestCase {
+                input: &[0; 256],
+                adr: 0,
+                cmd: 0,
+                expected_result: Result::Err(String::from("input too large")),
+            },
+        ];
+        for case in tests {
+            let out = mosi_frame(case.adr, case.cmd, case.input);
+            assert_eq!(case.expected_result, out);
+        }
     }
 }
