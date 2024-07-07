@@ -72,7 +72,11 @@ fn unstuff_data(data: &[u8]) -> Result<Vec<u8>, String> {
                 // TODO: include the stuffed byte once we have real error types.
                 Some(_) => return Result::Err(String::from("invalid/unsupported stuffed byte")),
                 None => {
-                    return Result::Err(String::from("unexpected end of data after stuff byte"))
+                    eprintln!(
+                        "Unexpected end of data after stuff byte, on input data: {:#X?}",
+                        data
+                    );
+                    return Result::Err(String::from("unexpected end of data after stuff byte"));
                 }
             };
             out.push(mapped.unwrap());
@@ -122,6 +126,28 @@ pub fn decode_miso_frame(data_stuffed: &[u8]) -> Result<MisoFrame, String> {
     }
 
     let data = &(unstuff_data(&data_stuffed).unwrap());
+
+    let state = data[3];
+    if state != 0 {
+        if state & 0x01 != 0 {
+            eprintln!("Wrong data length 0x01");
+        }
+        if state & 0x02 != 0 {
+            eprintln!("Unknown command 0x02");
+        }
+        if state & 0x03 != 0 {
+            eprintln!("No access right 0x03");
+        }
+        if state & 0x04 != 0 {
+            eprintln!("Illegal command param 0x04");
+        }
+        if state & 0x28 != 0 {
+            eprintln!("Internal function arg out of range 0x28");
+        }
+        if state & 0x43 != 0 {
+            eprintln!("Command not allowed in current state 0x43");
+        }
+    }
 
     let expected_rx_data_length = data[4];
     let rx_data = &data[5..data.len() - 2];
