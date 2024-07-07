@@ -89,9 +89,9 @@ fn unstuff_data(data: &[u8]) -> Result<Vec<u8>, String> {
 
 pub struct MisoFrame {
     adr: u8,
-    cmd: u8,
+    pub cmd: u8,
     state: u8,
-    data: Vec<u8>,
+    pub data: Vec<u8>,
 }
 
 impl fmt::Debug for MisoFrame {
