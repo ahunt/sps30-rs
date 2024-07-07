@@ -59,14 +59,8 @@ pub fn mosi_frame(adr: u8, cmd: u8, data: &[u8]) -> Result<Vec<u8>, String> {
     Result::Ok(out)
 }
 
-fn unstuff_rx_data(expected_unstuffed_length: usize, data: &[u8]) -> Result<Vec<u8>, String> {
-    if expected_unstuffed_length > data.len() {
-        return Result::Err(String::from(
-            "expected unstuffed length cannot be greater than actual stuffed length",
-        ));
-    }
-
-    let mut out = Vec::with_capacity(expected_unstuffed_length);
+fn unstuff_data(data: &[u8]) -> Result<Vec<u8>, String> {
+    let mut out = Vec::with_capacity(data.len());
     let mut it = data.iter();
     while let Some(byte) = it.next() {
         if *byte == 0x7D {
@@ -85,11 +79,6 @@ fn unstuff_rx_data(expected_unstuffed_length: usize, data: &[u8]) -> Result<Vec<
         } else {
             out.push(*byte);
         }
-    }
-    if out.len() != expected_unstuffed_length {
-        return Result::Err(String::from(
-            "unstuffed length did not match expected unstuffed length",
-        ));
     }
     Result::Ok(out)
 }
@@ -121,20 +110,26 @@ impl PartialEq for MisoFrame {
 }
 
 // Decode an entire miso_frame, including start/stop bytes.
-pub fn decode_miso_frame(data: &[u8]) -> Result<MisoFrame, String> {
-    if data.len() < 7 {
+pub fn decode_miso_frame(data_stuffed: &[u8]) -> Result<MisoFrame, String> {
+    if data_stuffed.len() < 7 {
         return Result::Err(String::from("invalid miso frame length"));
     }
 
-    if data[0] != 0x7E || data[data.len() - 1] != 0x7E {
+    if data_stuffed[0] != 0x7E || data_stuffed[data_stuffed.len() - 1] != 0x7E {
         return Result::Err(String::from(
             "invalid miso frame: incorrect/missing start/stop bytes",
         ));
     }
 
-    let expected_unstuffed_length = data[4];
+    let data = &(unstuff_data(&data_stuffed).unwrap());
+
+    let expected_rx_data_length = data[4];
     let rx_data = &data[5..data.len() - 2];
-    let unstuffed_data = unstuff_rx_data(usize::from(expected_unstuffed_length), &rx_data)?;
+    if rx_data.len() != expected_rx_data_length.into() {
+        return Result::Err(String::from(
+            "actual received data does not match expected length",
+        ));
+    }
 
     // TODO: check checksum.
 
@@ -142,7 +137,7 @@ pub fn decode_miso_frame(data: &[u8]) -> Result<MisoFrame, String> {
         adr: data[1],
         cmd: data[2],
         state: data[3],
-        data: unstuffed_data,
+        data: rx_data.to_vec(),
     })
 }
 
@@ -244,78 +239,60 @@ mod tests {
     }
 
     #[test]
-    fn test_unstuff_rx_data() {
+    fn test_unstuff_data() {
         struct TestCase<'a> {
             input: &'a [u8],
-            expected_unstuffed_length_input: usize,
+            expected_unstuffed_length: usize,
             expected_result: Result<Vec<u8>, String>,
         }
         let tests = [
             TestCase {
                 input: &[],
-                expected_unstuffed_length_input: 0,
+                expected_unstuffed_length: 0,
                 expected_result: Result::Ok(vec![]),
             },
             TestCase {
-                input: &[],
-                expected_unstuffed_length_input: 1,
-                expected_result: Result::Err(String::from(
-                    "expected unstuffed length cannot be greater than actual stuffed length",
-                )),
-            },
-            TestCase {
                 input: &[0],
-                expected_unstuffed_length_input: 0,
-                expected_result: Result::Err(String::from(
-                    "unstuffed length did not match expected unstuffed length",
-                )),
-            },
-            TestCase {
-                input: &[0],
-                expected_unstuffed_length_input: 1,
+                expected_unstuffed_length: 1,
                 expected_result: Result::Ok(vec![0]),
             },
             TestCase {
                 input: &[0xFF, 0],
-                expected_unstuffed_length_input: 2,
+                expected_unstuffed_length: 2,
                 expected_result: Result::Ok(vec![0xFF, 0]),
             },
             TestCase {
                 input: &[0x7D, 0x5E],
-                expected_unstuffed_length_input: 1,
+                expected_unstuffed_length: 1,
                 expected_result: Result::Ok(vec![0x7E]),
             },
             TestCase {
                 input: &[0x7D, 0x5D],
-                expected_unstuffed_length_input: 1,
+                expected_unstuffed_length: 1,
                 expected_result: Result::Ok(vec![0x7D]),
             },
             TestCase {
                 input: &[0x7D, 0x31],
-                expected_unstuffed_length_input: 1,
+                expected_unstuffed_length: 1,
                 expected_result: Result::Ok(vec![0x11]),
             },
             TestCase {
                 input: &[0x7D, 0x33],
-                expected_unstuffed_length_input: 1,
+                expected_unstuffed_length: 1,
                 expected_result: Result::Ok(vec![0x13]),
             },
             TestCase {
                 input: &[0, 0x7D, 0x5E, 0],
-                expected_unstuffed_length_input: 3,
+                expected_unstuffed_length: 3,
                 expected_result: Result::Ok(vec![0, 0x7E, 0]),
-            },
-            TestCase {
-                input: &[0, 0x7D, 0x5E, 0],
-                expected_unstuffed_length_input: 4,
-                expected_result: Result::Err(String::from(
-                    "unstuffed length did not match expected unstuffed length",
-                )),
             },
         ];
         for case in tests {
-            let out = unstuff_rx_data(case.expected_unstuffed_length_input, case.input);
-            assert_eq!(case.expected_result, out)
+            let out = unstuff_data(case.input);
+            assert_eq!(case.expected_result, out);
+            if let Result::Ok(data) = case.expected_result {
+                assert_eq!(case.expected_unstuffed_length, data.len())
+            }
         }
     }
     #[test]
@@ -367,6 +344,33 @@ mod tests {
                     cmd: 2,
                     state: 3,
                     data: vec![0xFF],
+                }),
+            },
+            TestCase {
+                // TODO: fix CHK (2nd last byte) once checksum checks are implemented.
+                // L=2, but RX Data contains only 1 byte.
+                input: &[0x7E, 1, 2, 3, 2, 0xFF, 0, 0x7E],
+                expected_result: Result::Err(String::from(
+                    "actual received data does not match expected length",
+                )),
+            },
+            TestCase {
+                // TODO: fix CHK (2nd last byte) once checksum checks are implemented.
+                // L=0, but RX Data contains 1 byte.
+                input: &[0x7E, 1, 2, 3, 0, 0xFF, 0, 0x7E],
+                expected_result: Result::Err(String::from(
+                    "actual received data does not match expected length",
+                )),
+            },
+            TestCase {
+                // TODO: fix CHK (2nd last byte) once checksum checks are implemented.
+                // L=2, but RX Data contains 1 normal and 1 stuffed byte (i.e. 3 prior to unstuffing).
+                input: &[0x7E, 1, 2, 3, 2, 0xFF, 0x7D, 0x5D, 0, 0x7E],
+                expected_result: Result::Ok(MisoFrame {
+                    adr: 1,
+                    cmd: 2,
+                    state: 3,
+                    data: vec![0xFF, 0x7D],
                 }),
             },
         ];
