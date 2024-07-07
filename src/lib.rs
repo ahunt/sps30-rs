@@ -1,7 +1,9 @@
 // TODO: temporarily allow dead_code until basic implementation is done.
 #![allow(dead_code)]
 
-mod shdlc;
+// TODO: temporarily make public until the real API has been determined.
+pub mod measurement;
+pub mod shdlc;
 
 // TODO: remove default boilerplate.
 pub fn add(left: usize, right: usize) -> usize {
