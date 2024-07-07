@@ -104,6 +104,12 @@ impl fmt::Debug for MisoFrame {
     }
 }
 
+impl fmt::Display for MisoFrame {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self, f)
+    }
+}
+
 impl PartialEq for MisoFrame {
     fn eq(&self, other: &Self) -> bool {
         self.adr == other.adr
