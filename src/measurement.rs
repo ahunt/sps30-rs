@@ -26,9 +26,14 @@ impl Measurement {
 
     pub fn csv_row(&self) -> String {
         let date_time = time::OffsetDateTime::now_utc();
-        let formatted_date_time = date_time
-            .format(&time::format_description::well_known::Iso8601::DEFAULT)
-            .unwrap();
+        // None of the time::format_description::well_known formats are actually well
+        // known to e.g. gnuplot or LibreOffice (translation: good luck getting them
+        // parsed).
+        let format = time::macros::format_description!(
+            version = 2,
+            "[year]-[month]-[day]T[hour]:[minute]:[second]"
+        );
+        let formatted_date_time = date_time.format(&format).unwrap();
         format!(
             "{},{},{},{},{},{},{},{},{},{},{}",
             formatted_date_time,
