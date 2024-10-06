@@ -1,45 +1,12 @@
 extern crate serialport;
+use std::io::BufRead;
+use std::io::BufReader;
 
 // TODO: enumerate devices dynamically
 const DEVICE: &str = "/dev/ttyUSB0";
 
-fn contains_frame(buf: &[u8], loc: usize) -> bool {
-    let mut count = 0;
-    for i in 0..loc {
-        if buf[i] == 0x7E {
-            count += 1;
-        }
-        if count == 2 {
-            return true;
-        }
-    }
-    false
-}
-
-fn read_frame(buf: &mut [u8; 512], loc: &mut usize) -> Result<sps30rs::shdlc::MisoFrame, String> {
-    let mut start: Option<usize> = None;
-    let mut end: Option<usize> = None;
-    for i in 0..*loc {
-        if buf[i] == 0x7E {
-            if start == None {
-                start = Some(i);
-            } else {
-                end = Some(i);
-                break;
-            }
-        }
-    }
-    if end == None {
-        return Result::Err(String::from("no frame in data"));
-    }
-
-    let frame = sps30rs::shdlc::decode_miso_frame(&buf[start.unwrap()..end.unwrap() + 1]);
-    let remaining_data = *loc - (end.unwrap() + 1);
-    if remaining_data > 0 {
-        buf.copy_within(end.unwrap() + 1..=*loc, 0);
-    }
-    *loc = remaining_data;
-    frame
+fn parse_frame(buf: &Vec<u8>) -> Result<sps30rs::shdlc::MisoFrame, String> {
+    sps30rs::shdlc::decode_miso_frame(buf)
 }
 
 // TODO: this needs to be moved into a new SPS30 device API.
@@ -66,22 +33,49 @@ fn main() {
         .open()
         .expect("Unable to open serial port, sorry");
 
+    // TODO: figure out a more sensible way of doing this instead of cloning the
+    // port just to be able to read and write in parallel.
+    let mut reader = BufReader::new(
+        port.try_clone()
+            .expect("splines failed to be reticulated (failed to clone the serialport)"),
+    );
+
     write_frame(
         &mut port,
         sps30rs::shdlc::mosi_frame(0, /* cmd: Device Information */ 0xD0, &[0x00]).unwrap(),
     );
 
-    // TODO: this buffer should also be folded into the new SPS30 device API.
-    let mut buf: [u8; 512] = [0; 512];
-    let mut loc: usize = 0;
-    while !contains_frame(&buf, loc) {
-        loc += port.read(&mut buf[loc..]).unwrap();
+    let mut buf = vec![];
+    // TODO: replace these loops with a reusable read_frame func (or even better
+    // hide it behind the new device API).
+    loop {
+        match reader.read_until(0x7E, &mut buf) {
+            Err(e) => {
+                eprintln!("failure reading data {}", e);
+                continue;
+            }
+            Ok(1) => {
+                continue;
+            }
+            Ok(_) => (),
+        }
+
+        match parse_frame(&buf) {
+            Err(e) => eprintln!("failed to parse frame {}", e),
+            Ok(frame) => {
+                if frame.cmd == 0xD0 {
+                    eprintln!(
+                        "Received device identifier: {}",
+                        std::str::from_utf8(&frame.data).unwrap()
+                    );
+                    break;
+                } else {
+                    eprintln!("Received unexpected frame {}", frame.cmd)
+                }
+            }
+        }
     }
-    let frame = read_frame(&mut buf, &mut loc).unwrap();
-    eprintln!(
-        "Device identifier: {}",
-        std::str::from_utf8(&frame.data).unwrap()
-    );
+    buf.clear();
 
     write_frame(
         &mut port,
@@ -95,14 +89,34 @@ fn main() {
         )
         .unwrap(),
     );
-    while !contains_frame(&buf, loc) {
-        loc += port.read(&mut buf[loc..]).unwrap();
+    loop {
+        match reader.read_until(0x7E, &mut buf) {
+            Err(e) => {
+                eprintln!("failure reading data {}", e);
+                continue;
+            }
+            Ok(1) => {
+                continue;
+            }
+            Ok(_) => (),
+        }
+
+        match parse_frame(&buf) {
+            Err(e) => eprintln!("failed to parse frame {}", e),
+            Ok(frame) => {
+                if frame.cmd == 0x00 {
+                    eprintln!(
+                        "Received start measurement response (expected to be empty): {}",
+                        std::str::from_utf8(&frame.data).unwrap()
+                    );
+                    break;
+                } else {
+                    eprintln!("Received unexpected frame {}", frame.cmd);
+                }
+            }
+        }
     }
-    let frame = read_frame(&mut buf, &mut loc).unwrap();
-    eprintln!(
-        "\nGot start Measurement response - should be empty (unless start measurement was already performed during a previous invocation): {}\n",
-        std::str::from_utf8(&frame.data).unwrap()
-    );
+    buf.clear();
 
     println!("{}", sps30rs::measurement::Measurement::csv_header());
     loop {
@@ -111,13 +125,41 @@ fn main() {
             sps30rs::shdlc::mosi_frame(0, /* cmd: Start measurement */ 0x03, &[]).unwrap(),
         );
 
-        while !contains_frame(&buf, loc) {
-            loc += port.read(&mut buf[loc..]).unwrap();
+        match reader.read_until(0x7E, &mut buf) {
+            Err(e) => {
+                eprintln!("unexpected error {}", e);
+                break;
+            }
+            // We expect nowt prior to the frame start.
+            Ok(1) => (),
+            Ok(n) => {
+                eprintln!("unexpectedly read too much data, length {}", n);
+                break;
+            }
         }
-        // TODO: handle no data available
-        let frame = read_frame(&mut buf, &mut loc).unwrap();
-        let measurement = sps30rs::measurement::decode_measurement_frame(&frame).unwrap();
-        println!("{}", measurement.csv_row());
+
+        match reader.read_until(0x7E, &mut buf) {
+            Err(e) => {
+                eprintln!("unexpected error {}", e);
+                break;
+            }
+            Ok(_) => (),
+        }
+
+        match parse_frame(&buf) {
+            Err(e) => eprintln!("failed to parse frame {}", e),
+            Ok(frame) => {
+                if frame.cmd == 0x03 {
+                    match sps30rs::measurement::decode_measurement_frame(&frame) {
+                        Ok(measurement) => println!("{}", measurement.csv_row()),
+                        Err(e) => eprintln!("failed to decode measurement: {}", e),
+                    }
+                } else {
+                    eprintln!("Received unexpected frame {}", frame.cmd);
+                }
+            }
+        }
         std::thread::sleep(std::time::Duration::new(5, 0));
+        buf.clear();
     }
 }
