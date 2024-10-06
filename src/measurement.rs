@@ -89,9 +89,12 @@ pub fn decode_measurement_frame(frame: &MisoFrame) -> Result<Measurement, String
         ));
     }
     if frame.data.len() != 40 {
-        return Result::Err(String::from(
-            "ReadMeasuredValues MISO frame has unexpected length",
-        ));
+        // TODO: len=0 indicates that no data is available yet.
+        return Result::Err(String::from(format!(
+            "ReadMeasuredValues MISO frame has unexpected length, actual={}, frame={}",
+            frame.data.len(),
+            frame
+        )));
     }
 
     Result::Ok(Measurement {
